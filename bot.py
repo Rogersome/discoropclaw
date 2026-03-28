@@ -4,18 +4,16 @@ from ta.momentum import RSIIndicator
 import time
 import sqlite3
 from getpass import getpass
+from news import fetch_news, analyze_sentiment, build_daily_report
 
-SYMBOL = "BTC-USD"
-DISCORD_WEBHOOK = getpass("Paste your Discord Webhook URL: ")
-DB_PATH = "/content/trading_bot.db"
-
-# ── Risk config ───────────────────────────────────────────────────────────────
-
+SYMBOL          = "BTC-USD"
+DB_PATH         = "/content/trading_bot.db"
 CAPITAL         = 1000
 RISK_PER_TRADE  = 0.02
 STOP_LOSS_PCT   = 0.02
 TAKE_PROFIT_PCT = 0.04
-MAX_OPEN_TRADES = 1
+
+DISCORD_WEBHOOK = getpass("Paste your Discord Webhook URL: ")
 
 # ── Database ──────────────────────────────────────────────────────────────────
 
@@ -110,39 +108,6 @@ def get_performance():
         "total_pnl": round(sum(pnls), 2)
     }
 
-# ── Risk Engine ───────────────────────────────────────────────────────────────
-
-def calculate_position(entry_price):
-    risk_amount = CAPITAL * RISK_PER_TRADE
-    stop_loss_distance = entry_price * STOP_LOSS_PCT
-    qty = round(risk_amount / stop_loss_distance, 6)
-    stop_loss   = round(entry_price * (1 - STOP_LOSS_PCT), 2)
-    take_profit = round(entry_price * (1 + TAKE_PROFIT_PCT), 2)
-    return qty, stop_loss, take_profit
-
-def check_exit(trade, current_price):
-    trade_id, _, _, direction, entry_price, qty, sl, tp, *_ = trade
-    if direction == "BUY":
-        if current_price <= sl:
-            return "SL"
-        if current_price >= tp:
-            return "TP"
-    elif direction == "SELL":
-        if current_price >= sl:
-            return "SL"
-        if current_price <= tp:
-            return "TP"
-    return None
-
-def risk_approved(signal, confidence):
-    if signal == "HOLD":
-        return False
-    if confidence < 80:
-        return False
-    if get_open_trade() is not None:
-        return False
-    return True
-
 # ── Market data ───────────────────────────────────────────────────────────────
 
 def safe_request(url):
@@ -176,6 +141,32 @@ def generate_signal(rsi):
         return "SELL", 80
     return "HOLD", 50
 
+# ── Risk Engine ───────────────────────────────────────────────────────────────
+
+def calculate_position(entry_price):
+    risk_amount        = CAPITAL * RISK_PER_TRADE
+    stop_loss_distance = entry_price * STOP_LOSS_PCT
+    qty         = round(risk_amount / stop_loss_distance, 6)
+    stop_loss   = round(entry_price * (1 - STOP_LOSS_PCT), 2)
+    take_profit = round(entry_price * (1 + TAKE_PROFIT_PCT), 2)
+    return qty, stop_loss, take_profit
+
+def check_exit(trade, current_price):
+    _, _, _, direction, _, _, sl, tp, *_ = trade
+    if direction == "BUY":
+        if current_price <= sl: return "SL"
+        if current_price >= tp: return "TP"
+    elif direction == "SELL":
+        if current_price >= sl: return "SL"
+        if current_price <= tp: return "TP"
+    return None
+
+def risk_approved(signal, confidence):
+    if signal == "HOLD":  return False
+    if confidence < 80:   return False
+    if get_open_trade():  return False
+    return True
+
 # ── Discord ───────────────────────────────────────────────────────────────────
 
 def send_to_discord(message):
@@ -185,6 +176,19 @@ def send_to_discord(message):
             print(f"Discord error: {resp.status_code}")
     except Exception as e:
         print(f"Discord send failed: {e}")
+
+# ── Daily report ──────────────────────────────────────────────────────────────
+
+def run_daily_report():
+    print("Fetching news...")
+    articles = fetch_news()
+    if not articles:
+        print("No articles fetched.")
+        return
+    sentiment_score, trend = analyze_sentiment(articles)
+    report = build_daily_report(articles, sentiment_score, trend, get_performance())
+    print(report)
+    send_to_discord(report)
 
 # ── Main cycle ────────────────────────────────────────────────────────────────
 
@@ -234,7 +238,6 @@ Take-Profit: ${tp:,.2f}
 Time: {time.strftime('%Y-%m-%d %H:%M:%S')} UTC""")
         print(f"Trade opened: {signal} @ ${price:,.2f} | SL: ${sl} | TP: ${tp}")
 
-    # Send signal
     msg = f"""🚀 AI Trading Signal
 
 Asset: {SYMBOL}
@@ -249,6 +252,6 @@ Time: {time.strftime('%Y-%m-%d %H:%M:%S')} UTC"""
     print(msg)
     send_to_discord(msg)
 
-# ── Init ──────────────────────────────────────────────────────────────────────
+# ── Init & run ────────────────────────────────────────────────────────────────
 
 init_db()
