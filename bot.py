@@ -3,8 +3,18 @@ import pandas as pd
 from ta.momentum import RSIIndicator
 import time
 import sqlite3
+import feedparser
+import threading
+import discord
+from discord.ext import commands
+import nest_asyncio
 from getpass import getpass
-from news import fetch_news, analyze_sentiment, build_daily_report
+import anthropic
+import json
+
+nest_asyncio.apply()
+
+# ── Config ────────────────────────────────────────────────────────────────────
 
 SYMBOL          = "BTC-USD"
 DB_PATH         = "/content/trading_bot.db"
@@ -12,8 +22,101 @@ CAPITAL         = 1000
 RISK_PER_TRADE  = 0.02
 STOP_LOSS_PCT   = 0.02
 TAKE_PROFIT_PCT = 0.04
+MIN_BALANCE     = CAPITAL * 0.5
 
-DISCORD_WEBHOOK = getpass("Paste your Discord Webhook URL: ")
+BOT_TOKEN         = getpass("Paste your Discord Bot Token: ")
+CHANNEL_ID        = int(input("Paste your Discord Channel ID: "))
+ANTHROPIC_API_KEY = getpass("Paste your Anthropic API key: ")
+claude            = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+# ── News ──────────────────────────────────────────────────────────────────────
+
+NEWS_FEEDS = {
+    "CoinDesk":      "https://www.coindesk.com/arc/outboundfeeds/rss/",
+    "CoinTelegraph": "https://cointelegraph.com/rss",
+    "MarketWatch":   "https://feeds.content.dowjones.io/public/rss/mw_realtimeheadlines",
+    "Yahoo Finance": "https://finance.yahoo.com/news/rssindex",
+}
+
+def fetch_news(max_per_feed=5):
+    articles = []
+    for source, url in NEWS_FEEDS.items():
+        try:
+            feed = feedparser.parse(url)
+            for entry in feed.entries[:max_per_feed]:
+                title = entry.get("title", "").strip()
+                if title:
+                    articles.append({"source": source, "title": title})
+        except Exception as e:
+            print(f"Feed error ({source}): {e}")
+    return articles
+
+def analyze_sentiment(articles):
+    if not articles:
+        return 0, "➡️ Neutral", {}
+
+    headlines = "\n".join(
+        f"- [{a['source']}] {a['title']}" for a in articles
+    )
+
+    try:
+        message = claude.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=300,
+            messages=[{
+                "role": "user",
+                "content": f"""You are a crypto market analyst. Analyze these news headlines and return ONLY a JSON object, no other text.
+
+Headlines:
+{headlines}
+
+Return this exact JSON structure:
+{{
+  "score": <float from -1.0 to 1.0>,
+  "trend": "<📈 Bullish | 📉 Bearish | ➡️ Neutral>",
+  "reasoning": "<one sentence explaining the key driver>",
+  "top_coin": "<most mentioned coin symbol or BTC>",
+  "confidence": <integer 0-100>
+}}"""
+            }]
+        )
+        result = json.loads(message.content[0].text)
+        score = float(result["score"])
+        trend = result["trend"]
+        return round(score, 3), trend, result
+    except Exception as e:
+        print(f"Claude sentiment error: {e}")
+        return 0, "➡️ Neutral", {}
+
+def build_news_report(articles, sentiment_score, trend, performance, balance, equity, claude_result=None):
+    headlines  = "\n".join(f"• [{a['source']}] {a['title']}" for a in articles[:10])
+    reasoning  = claude_result.get("reasoning", "N/A") if claude_result else "N/A"
+    confidence = claude_result.get("confidence", "N/A") if claude_result else "N/A"
+    top_coin   = claude_result.get("top_coin", "BTC") if claude_result else "BTC"
+
+    return f"""📰 Daily Crypto & Market Report
+{time.strftime('%Y-%m-%d')}
+
+🤖 Claude Analysis
+Sentiment : {sentiment_score} → {trend}
+Confidence: {confidence}%
+Key driver: {reasoning}
+Top coin  : {top_coin}
+
+💰 Account
+Balance : ${balance:,.2f}
+Equity  : ${equity:,.2f}
+
+📊 Performance
+Total Trades : {performance['total_trades']}
+Wins / Losses: {performance['wins']} / {performance['losses']}
+Win Rate     : {performance['win_rate']}%
+Total PnL    : ${performance['total_pnl']:+.2f}
+
+Top Headlines:
+{headlines}
+
+Time: {time.strftime('%Y-%m-%d %H:%M:%S')} UTC"""
 
 # ── Database ──────────────────────────────────────────────────────────────────
 
@@ -42,10 +145,24 @@ def init_db():
             exit_price  REAL,
             pnl         REAL
         );
+        CREATE TABLE IF NOT EXISTS balance (
+            id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT,
+            equity    REAL,
+            pnl       REAL
+        );
     """)
     conn.commit()
     conn.close()
     print("Database initialised.")
+
+def init_balance():
+    conn = sqlite3.connect(DB_PATH)
+    exists = conn.execute("SELECT COUNT(*) FROM balance").fetchone()[0]
+    if exists == 0:
+        conn.execute("INSERT INTO balance (equity) VALUES (?)", (CAPITAL,))
+        conn.commit()
+    conn.close()
 
 def save_signal(price, rsi, signal, confidence):
     conn = sqlite3.connect(DB_PATH)
@@ -92,6 +209,33 @@ def close_trade(trade_id, exit_price):
     conn.close()
     return round(pnl, 2)
 
+def get_balance():
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute("SELECT equity FROM balance ORDER BY id DESC LIMIT 1").fetchone()
+    conn.close()
+    return row[0] if row else CAPITAL
+
+def update_balance(pnl):
+    conn = sqlite3.connect(DB_PATH)
+    current = conn.execute("SELECT equity FROM balance ORDER BY id DESC LIMIT 1").fetchone()
+    new_balance = (current[0] if current else CAPITAL) + pnl
+    conn.execute(
+        "INSERT INTO balance (timestamp, equity, pnl) VALUES (?,?,?)",
+        (time.strftime("%Y-%m-%d %H:%M:%S"), round(new_balance, 2), round(pnl, 2))
+    )
+    conn.commit()
+    conn.close()
+    return round(new_balance, 2)
+
+def get_equity(current_price):
+    balance = get_balance()
+    trade = get_open_trade()
+    if not trade:
+        return balance
+    _, _, _, direction, entry_price, qty, *_ = trade
+    unrealized = (current_price - entry_price) * qty if direction == "BUY" else (entry_price - current_price) * qty
+    return round(balance + unrealized, 2)
+
 def get_performance():
     conn = sqlite3.connect(DB_PATH)
     rows = conn.execute("SELECT pnl FROM trades WHERE status='CLOSED'").fetchall()
@@ -107,6 +251,15 @@ def get_performance():
         "win_rate": round(wins / len(pnls) * 100, 1),
         "total_pnl": round(sum(pnls), 2)
     }
+
+def get_recent_trades(limit=5):
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute(
+        "SELECT timestamp, direction, entry_price, exit_price, pnl, status FROM trades ORDER BY id DESC LIMIT ?",
+        (limit,)
+    ).fetchall()
+    conn.close()
+    return rows
 
 # ── Market data ───────────────────────────────────────────────────────────────
 
@@ -126,7 +279,6 @@ def get_price():
 def get_klines():
     data = safe_request("https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity=60&limit=100")
     if not isinstance(data, list) or len(data) == 0:
-        print(f"Unexpected klines response: {data}")
         return None
     return [float(k[4]) for k in data]
 
@@ -162,71 +314,52 @@ def check_exit(trade, current_price):
     return None
 
 def risk_approved(signal, confidence):
-    if signal == "HOLD":  return False
-    if confidence < 80:   return False
-    if get_open_trade():  return False
+    if signal == "HOLD":             return False
+    if confidence < 80:              return False
+    if get_open_trade():             return False
+    if get_balance() < MIN_BALANCE:
+        print(f"Balance too low: ${get_balance():.2f}. Trading paused.")
+        return False
     return True
 
-# ── Discord ───────────────────────────────────────────────────────────────────
+# ── Background cycle ──────────────────────────────────────────────────────────
 
-def send_to_discord(message):
-    try:
-        resp = requests.post(DISCORD_WEBHOOK, json={"content": message}, timeout=5)
-        if resp.status_code not in (200, 204):
-            print(f"Discord error: {resp.status_code}")
-    except Exception as e:
-        print(f"Discord send failed: {e}")
+def send_to_channel(message):
+    channel = bot.get_channel(CHANNEL_ID)
+    if channel:
+        import asyncio
+        asyncio.run_coroutine_threadsafe(channel.send(message), bot.loop)
 
-# ── Daily report ──────────────────────────────────────────────────────────────
-
-def run_daily_report():
-    print("Fetching news...")
-    articles = fetch_news()
-    if not articles:
-        print("No articles fetched.")
-        return
-    sentiment_score, trend = analyze_sentiment(articles)
-    report = build_daily_report(articles, sentiment_score, trend, get_performance())
-    print(report)
-    send_to_discord(report)
-
-# ── Main cycle ────────────────────────────────────────────────────────────────
-
-def run_cycle():
+def background_cycle():
     price = get_price()
     closes = get_klines()
-
     if not price or not closes:
-        print("Data fetch failed, skipping cycle")
         return
-
     rsi = get_rsi(closes)
     signal, confidence = generate_signal(rsi)
     save_signal(price, rsi, signal, confidence)
 
-    signal_emoji = {"BUY": "🟢 BUY", "SELL": "🔴 SELL", "HOLD": "🟡 HOLD"}[signal]
-
-    # Check exit on open trade
     current_trade = get_open_trade()
     if current_trade:
         exit_reason = check_exit(current_trade, price)
         if exit_reason:
             pnl = close_trade(current_trade[0], price)
+            new_balance = update_balance(pnl)
             emoji = "✅" if pnl > 0 else "❌"
-            send_to_discord(f"""{emoji} Trade Closed [{exit_reason}]
+            send_to_channel(f"""{emoji} Trade Closed [{exit_reason}]
 
 Asset: {SYMBOL}
 Exit Price: ${price:,.2f}
 PnL: ${pnl:+.2f}
+Balance: ${new_balance:,.2f}
 
 Time: {time.strftime('%Y-%m-%d %H:%M:%S')} UTC""")
-            print(f"Trade closed [{exit_reason}] PnL: ${pnl:+.2f}")
 
-    # Open new trade if approved
     if risk_approved(signal, confidence):
         qty, sl, tp = calculate_position(price)
         open_trade(signal, price, qty, sl, tp)
-        send_to_discord(f"""📥 New Paper Trade Opened
+        signal_emoji = {"BUY": "🟢 BUY", "SELL": "🔴 SELL", "HOLD": "🟡 HOLD"}[signal]
+        send_to_channel(f"""📥 New Paper Trade Opened
 
 Asset: {SYMBOL}
 Direction: {signal_emoji}
@@ -234,24 +367,115 @@ Entry: ${price:,.2f}
 Qty: {qty} BTC
 Stop-Loss: ${sl:,.2f}
 Take-Profit: ${tp:,.2f}
+Balance: ${get_balance():,.2f}
 
 Time: {time.strftime('%Y-%m-%d %H:%M:%S')} UTC""")
-        print(f"Trade opened: {signal} @ ${price:,.2f} | SL: ${sl} | TP: ${tp}")
 
-    msg = f"""🚀 AI Trading Signal
+def background_loop():
+    while True:
+        try:
+            background_cycle()
+        except Exception as e:
+            print(f"Background error: {e}")
+        time.sleep(60)
+
+# ── Discord bot ───────────────────────────────────────────────────────────────
+
+intents = discord.Intents.default()
+intents.message_content = True
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+@bot.event
+async def on_ready():
+    print(f"Bot online as {bot.user}")
+    thread = threading.Thread(target=background_loop, daemon=True)
+    thread.start()
+    await bot.get_channel(CHANNEL_ID).send("🤖 Bot is online. Type `!help_bot` to see commands.")
+
+@bot.command()
+async def signal(ctx):
+    price = get_price()
+    closes = get_klines()
+    if not price or not closes:
+        await ctx.send("Data fetch failed.")
+        return
+    rsi = get_rsi(closes)
+    sig, confidence = generate_signal(rsi)
+    signal_emoji = {"BUY": "🟢 BUY", "SELL": "🔴 SELL", "HOLD": "🟡 HOLD"}[sig]
+    equity = get_equity(price)
+    await ctx.send(f"""🚀 AI Trading Signal
 
 Asset: {SYMBOL}
 Price: ${price:,.2f}
 RSI: {round(rsi, 2)}
+Equity: ${equity:,.2f}
 
 Signal: {signal_emoji}
 Confidence: {confidence}%
 
-Time: {time.strftime('%Y-%m-%d %H:%M:%S')} UTC"""
+Time: {time.strftime('%Y-%m-%d %H:%M:%S')} UTC""")
 
-    print(msg)
-    send_to_discord(msg)
+@bot.command()
+async def balance(ctx):
+    price = get_price() or 0
+    await ctx.send(f"""💰 Account
 
-# ── Init & run ────────────────────────────────────────────────────────────────
+Balance : ${get_balance():,.2f}
+Equity  : ${get_equity(price):,.2f}
+Capital : ${CAPITAL:,.2f}""")
+
+@bot.command()
+async def perf(ctx):
+    p = get_performance()
+    await ctx.send(f"""📊 Performance Summary
+
+Total Trades : {p['total_trades']}
+Wins / Losses: {p['wins']} / {p['losses']}
+Win Rate     : {p['win_rate']}%
+Total PnL    : ${p['total_pnl']:+.2f}""")
+
+@bot.command()
+async def trades(ctx):
+    rows = get_recent_trades(5)
+    if not rows:
+        await ctx.send("No trades yet.")
+        return
+    msg = "📋 Recent Trades\n"
+    for r in rows:
+        timestamp, direction, entry, exit_price, pnl, status = r
+        pnl_str = f"${pnl:+.2f}" if pnl is not None else "open"
+        msg += f"• {direction} @ ${entry:,.2f} → {status} {pnl_str}\n"
+    await ctx.send(msg)
+
+@bot.command()
+async def news(ctx):
+    await ctx.send("Fetching news & running Claude analysis...")
+    articles = fetch_news()
+    if not articles:
+        await ctx.send("No articles fetched.")
+        return
+    price = get_price() or 0
+    sentiment_score, trend, claude_result = analyze_sentiment(articles)
+    report = build_news_report(
+        articles, sentiment_score, trend,
+        get_performance(), get_balance(), get_equity(price),
+        claude_result
+    )
+    await ctx.send(report)
+
+@bot.command()
+async def help_bot(ctx):
+    await ctx.send("""🤖 Available Commands
+
+!signal  — current price, RSI & trading signal
+!balance — account balance and equity
+!perf    — performance summary (win rate, PnL)
+!trades  — last 5 trades
+!news    — latest news & Claude sentiment analysis""")
+
+# ── Init & start ──────────────────────────────────────────────────────────────
 
 init_db()
+init_balance()
+
+await bot.start(BOT_TOKEN)
