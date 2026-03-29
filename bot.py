@@ -31,92 +31,207 @@ claude            = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 # ── News ──────────────────────────────────────────────────────────────────────
 
-NEWS_FEEDS = {
+CRYPTO_FEEDS = {
     "CoinDesk":      "https://www.coindesk.com/arc/outboundfeeds/rss/",
     "CoinTelegraph": "https://cointelegraph.com/rss",
-    "MarketWatch":   "https://feeds.content.dowjones.io/public/rss/mw_realtimeheadlines",
-    "Yahoo Finance": "https://finance.yahoo.com/news/rssindex",
 }
 
-def fetch_news(max_per_feed=5):
+FINANCE_FEEDS = {
+    "MarketWatch":   "https://feeds.content.dowjones.io/public/rss/mw_realtimeheadlines",
+    "Yahoo Finance": "https://finance.yahoo.com/news/rssindex",
+    "Reuters":       "https://feeds.reuters.com/reuters/businessNews",
+}
+
+POLITICAL_FEEDS = {
+    "Trump/Truth Social": "https://truthsocial.com/@realDonaldTrump.rss",
+    "White House":        "https://www.whitehouse.gov/feed/",
+    "Federal Reserve":    "https://www.federalreserve.gov/feeds/press_all.xml",
+    "SEC":                "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=&dateb=&owner=include&count=10&search_text=&output=atom",
+}
+
+def fetch_feed(feeds, max_per_feed=5):
     articles = []
-    for source, url in NEWS_FEEDS.items():
+    for source, url in feeds.items():
         try:
             feed = feedparser.parse(url)
             for entry in feed.entries[:max_per_feed]:
-                title = entry.get("title", "").strip()
+                title   = entry.get("title", "").strip()
+                summary = entry.get("summary", "") or entry.get("description", "")
+                summary = summary[:300].strip() if summary else ""
                 if title:
-                    articles.append({"source": source, "title": title})
+                    articles.append({
+                        "source":  source,
+                        "title":   title,
+                        "summary": summary
+                    })
         except Exception as e:
             print(f"Feed error ({source}): {e}")
     return articles
 
-def analyze_sentiment(articles):
-    if not articles:
-        return 0, "➡️ Neutral", {}
+def fetch_news():
+    crypto    = fetch_feed(CRYPTO_FEEDS)
+    finance   = fetch_feed(FINANCE_FEEDS)
+    political = fetch_feed(POLITICAL_FEEDS)
+    return {"crypto": crypto, "finance": finance, "political": political}
 
-    headlines = "\n".join(
-        f"- [{a['source']}] {a['title']}" for a in articles
+def _format_articles(articles):
+    return "\n".join(
+        f"- [{a['source']}] {a['title']}" + (f"\n  {a['summary']}" if a['summary'] else "")
+        for a in articles
     )
 
+def analyze_financial_news(crypto_articles, finance_articles):
+    if not crypto_articles and not finance_articles:
+        return {}
+    content = (
+        "=== Crypto News ===\n" + _format_articles(crypto_articles) +
+        "\n\n=== Finance News ===\n" + _format_articles(finance_articles)
+    )
     try:
         message = claude.messages.create(
             model="claude-sonnet-4-20250514",
-            max_tokens=300,
-            messages=[{
-                "role": "user",
-                "content": f"""You are a crypto market analyst. Analyze these news headlines and return ONLY a JSON object, no other text.
+            max_tokens=400,
+            messages=[{"role": "user", "content": f"""You are a crypto market analyst. Analyze these financial and crypto news articles and return ONLY a JSON object, no other text.
 
-Headlines:
-{headlines}
+{content}
 
 Return this exact JSON structure:
 {{
   "score": <float from -1.0 to 1.0>,
-  "trend": "<📈 Bullish | 📉 Bearish | ➡️ Neutral>",
-  "reasoning": "<one sentence explaining the key driver>",
-  "top_coin": "<most mentioned coin symbol or BTC>",
-  "confidence": <integer 0-100>
-}}"""
-            }]
+  "trend": "<Bullish | Bearish | Neutral>",
+  "reasoning": "<one sentence explaining the key market driver>",
+  "top_coin": "<most relevant coin symbol or BTC>",
+  "confidence": <integer 0-100>,
+  "key_events": ["<event1>", "<event2>"]
+}}"""}]
         )
-        result = json.loads(message.content[0].text)
-        score = float(result["score"])
-        trend = result["trend"]
-        return round(score, 3), trend, result
+        return json.loads(message.content[0].text)
     except Exception as e:
-        print(f"Claude sentiment error: {e}")
-        return 0, "➡️ Neutral", {}
+        print(f"Claude financial analysis error: {e}")
+        return {}
 
-def build_news_report(articles, sentiment_score, trend, performance, balance, equity, claude_result=None):
-    headlines  = "\n".join(f"• [{a['source']}] {a['title']}" for a in articles[:10])
-    reasoning  = claude_result.get("reasoning", "N/A") if claude_result else "N/A"
-    confidence = claude_result.get("confidence", "N/A") if claude_result else "N/A"
-    top_coin   = claude_result.get("top_coin", "BTC") if claude_result else "BTC"
+def analyze_political_news(political_articles):
+    if not political_articles:
+        return {}
+    content = _format_articles(political_articles)
+    try:
+        message = claude.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=400,
+            messages=[{"role": "user", "content": f"""You are a macro analyst specializing in how political events affect financial markets. Analyze these political posts and statements and return ONLY a JSON object, no other text.
 
-    return f"""📰 Daily Crypto & Market Report
-{time.strftime('%Y-%m-%d')}
+{content}
 
-🤖 Claude Analysis
-Sentiment : {sentiment_score} → {trend}
-Confidence: {confidence}%
-Key driver: {reasoning}
-Top coin  : {top_coin}
+Return this exact JSON structure:
+{{
+  "market_impact": "<Positive | Negative | Neutral>",
+  "impact_score": <float from -1.0 to 1.0>,
+  "affected_assets": ["<asset1>", "<asset2>"],
+  "reasoning": "<one sentence on market impact>",
+  "urgency": "<High | Medium | Low>",
+  "confidence": <integer 0-100>
+}}"""}]
+        )
+        return json.loads(message.content[0].text)
+    except Exception as e:
+        print(f"Claude political analysis error: {e}")
+        return {}
 
-💰 Account
+def analyze_sentiment(articles_by_type):
+    fin_result  = analyze_financial_news(
+        articles_by_type.get("crypto", []),
+        articles_by_type.get("finance", [])
+    )
+    pol_result  = analyze_political_news(articles_by_type.get("political", []))
+
+    fin_score   = float(fin_result.get("score", 0))
+    pol_score   = float(pol_result.get("impact_score", 0))
+    combined    = round((fin_score * 0.6) + (pol_score * 0.4), 3)
+
+    if combined >= 0.05:   trend = "Bullish"
+    elif combined <= -0.05: trend = "Bearish"
+    else:                   trend = "Neutral"
+
+    return combined, trend, {"financial": fin_result, "political": pol_result}
+
+def save_sentiment(score, trend, result):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "INSERT INTO sentiment_history (timestamp, score, trend, financial_json, political_json) VALUES (?,?,?,?,?)",
+        (
+            time.strftime("%Y-%m-%d %H:%M:%S"),
+            score,
+            trend,
+            json.dumps(result.get("financial", {})),
+            json.dumps(result.get("political", {}))
+        )
+    )
+    conn.commit()
+    conn.close()
+
+def get_yesterday_sentiment():
+    conn = sqlite3.connect(DB_PATH)
+    yesterday = time.strftime("%Y-%m-%d", time.gmtime(time.time() - 86400))
+    row = conn.execute(
+        "SELECT score, trend FROM sentiment_history WHERE timestamp LIKE ? ORDER BY id DESC LIMIT 1",
+        (f"{yesterday}%",)
+    ).fetchone()
+    conn.close()
+    return row
+
+def build_news_report(articles_by_type, score, trend, result, performance, balance, equity):
+    fin  = result.get("financial", {})
+    pol  = result.get("political", {})
+    yesterday = get_yesterday_sentiment()
+    trend_change = ""
+    if yesterday:
+        prev_score, prev_trend = yesterday
+        diff = round(score - prev_score, 3)
+        trend_change = f"\nVs Yesterday: {prev_trend} ({diff:+.3f})"
+
+    crypto_headlines  = "\n".join(f"  - [{a['source']}] {a['title']}" for a in articles_by_type.get("crypto", [])[:5])
+    finance_headlines = "\n".join(f"  - [{a['source']}] {a['title']}" for a in articles_by_type.get("finance", [])[:5])
+    political_posts   = "\n".join(f"  - [{a['source']}] {a['title']}" for a in articles_by_type.get("political", [])[:5])
+
+    return f"""Daily Market Intelligence Report
+{time.strftime('%Y-%m-%d %H:%M')} UTC
+
+=== Market Sentiment ===
+Overall Score : {score} -> {trend}{trend_change}
+
+--- Financial Analysis ---
+Trend     : {fin.get('trend', 'N/A')}
+Confidence: {fin.get('confidence', 'N/A')}%
+Reasoning : {fin.get('reasoning', 'N/A')}
+Top Coin  : {fin.get('top_coin', 'BTC')}
+Key Events: {', '.join(fin.get('key_events', []))}
+
+--- Political Analysis ---
+Impact    : {pol.get('market_impact', 'N/A')} ({pol.get('urgency', 'N/A')} urgency)
+Score     : {pol.get('impact_score', 'N/A')}
+Assets    : {', '.join(pol.get('affected_assets', []))}
+Reasoning : {pol.get('reasoning', 'N/A')}
+Confidence: {pol.get('confidence', 'N/A')}%
+
+=== Account ===
 Balance : ${balance:,.2f}
 Equity  : ${equity:,.2f}
 
-📊 Performance
+=== Performance ===
 Total Trades : {performance['total_trades']}
 Wins / Losses: {performance['wins']} / {performance['losses']}
 Win Rate     : {performance['win_rate']}%
 Total PnL    : ${performance['total_pnl']:+.2f}
 
-Top Headlines:
-{headlines}
+=== Top Headlines ===
+Crypto:
+{crypto_headlines}
 
-Time: {time.strftime('%Y-%m-%d %H:%M:%S')} UTC"""
+Finance:
+{finance_headlines}
+
+Political:
+{political_posts}"""
 
 # ── Database ──────────────────────────────────────────────────────────────────
 
@@ -150,6 +265,14 @@ def init_db():
             timestamp TEXT,
             equity    REAL,
             pnl       REAL
+        );
+        CREATE TABLE IF NOT EXISTS sentiment_history (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp      TEXT,
+            score          REAL,
+            trend          TEXT,
+            financial_json TEXT,
+            political_json TEXT
         );
     """)
     conn.commit()
@@ -450,28 +573,29 @@ async def trades(ctx):
 @bot.command()
 async def news(ctx):
     await ctx.send("Fetching news & running Claude analysis...")
-    articles = fetch_news()
-    if not articles:
+    articles_by_type = fetch_news()
+    total = sum(len(v) for v in articles_by_type.values())
+    if total == 0:
         await ctx.send("No articles fetched.")
         return
     price = get_price() or 0
-    sentiment_score, trend, claude_result = analyze_sentiment(articles)
+    score, trend, result = analyze_sentiment(articles_by_type)
+    save_sentiment(score, trend, result)
     report = build_news_report(
-        articles, sentiment_score, trend,
-        get_performance(), get_balance(), get_equity(price),
-        claude_result
+        articles_by_type, score, trend, result,
+        get_performance(), get_balance(), get_equity(price)
     )
     await ctx.send(report)
 
 @bot.command()
 async def help_bot(ctx):
-    await ctx.send("""🤖 Available Commands
+    await ctx.send("""Available Commands
 
 !signal  — current price, RSI & trading signal
 !balance — account balance and equity
 !perf    — performance summary (win rate, PnL)
 !trades  — last 5 trades
-!news    — latest news & Claude sentiment analysis""")
+!news    — crypto, finance & political news with Claude analysis""")
 
 # ── Init & start ──────────────────────────────────────────────────────────────
 
