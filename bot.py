@@ -363,20 +363,28 @@ def analyze_sentiment(articles_by_type):
 
     return combined, trend, {"financial": fin_result, "political": pol_result}
 
+def _parse_claude_json(text):
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.split("```")[1]
+        if text.startswith("json"):
+            text = text[4:]
+    return json.loads(text.strip())
+
 def _claude_financial(crypto, finance):
     if not crypto and not finance:
         return {}
     content = "=== Crypto ===\n" + _format_articles(crypto) + "\n\n=== Finance ===\n" + _format_articles(finance)
     try:
         msg = claude.messages.create(
-            model="claude-sonnet-4-20250514", max_tokens=400,
+            model="claude-haiku-4-5-20251001", max_tokens=400,
             messages=[{"role": "user", "content": f"""Crypto market analyst. Return ONLY JSON.
 
 {content}
 
 {{"score": <-1.0 to 1.0>, "trend": "<Bullish|Bearish|Neutral>", "reasoning": "<one sentence>", "top_coin": "<symbol>", "confidence": <0-100>, "key_events": ["<event1>"]}}"""}]
         )
-        return json.loads(msg.content[0].text)
+        return _parse_claude_json(msg.content[0].text)
     except Exception as e:
         print(f"Claude financial error: {e}")
         return {}
@@ -386,14 +394,14 @@ def _claude_political(political):
         return {}
     try:
         msg = claude.messages.create(
-            model="claude-sonnet-4-20250514", max_tokens=400,
+            model="claude-haiku-4-5-20251001", max_tokens=400,
             messages=[{"role": "user", "content": f"""Macro analyst. How do these political events affect markets? Return ONLY JSON.
 
 {_format_articles(political)}
 
 {{"market_impact": "<Positive|Negative|Neutral>", "impact_score": <-1.0 to 1.0>, "affected_assets": ["<asset>"], "reasoning": "<one sentence>", "urgency": "<High|Medium|Low>", "confidence": <0-100>}}"""}]
         )
-        return json.loads(msg.content[0].text)
+        return _parse_claude_json(msg.content[0].text)
     except Exception as e:
         print(f"Claude political error: {e}")
         return {}
