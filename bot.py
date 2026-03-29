@@ -7,12 +7,9 @@ import feedparser
 import threading
 import discord
 from discord.ext import commands
-import nest_asyncio
 from getpass import getpass
 import anthropic
 import json
-
-nest_asyncio.apply()
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -602,4 +599,5 @@ async def help_bot(ctx):
 init_db()
 init_balance()
 
-await bot.start(BOT_TOKEN)
+import asyncio
+asyncio.run(bot.start(BOT_TOKEN))
