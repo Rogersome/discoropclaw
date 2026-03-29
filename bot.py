@@ -378,11 +378,9 @@ def _claude_financial(crypto, finance):
     try:
         msg = claude.messages.create(
             model="claude-haiku-4-5-20251001", max_tokens=400,
-            messages=[{"role": "user", "content": f"""Crypto market analyst. Return ONLY JSON.
+            messages=[{"role": "user", "content": f"""Crypto market analyst. Analyze these articles and return ONLY a JSON object with these fields: score (float -1.0 to 1.0), trend (Bullish/Bearish/Neutral), reasoning (one sentence), top_coin (symbol), confidence (0-100), key_events (list of strings).
 
-{content}
-
-{{"score": <-1.0 to 1.0>, "trend": "<Bullish|Bearish|Neutral>", "reasoning": "<one sentence>", "top_coin": "<symbol>", "confidence": <0-100>, "key_events": ["<event1>"]}}"""}]
+{content}"""}]
         )
         return _parse_claude_json(msg.content[0].text)
     except Exception as e:
@@ -395,11 +393,9 @@ def _claude_political(political):
     try:
         msg = claude.messages.create(
             model="claude-haiku-4-5-20251001", max_tokens=400,
-            messages=[{"role": "user", "content": f"""Macro analyst. How do these political events affect markets? Return ONLY JSON.
+            messages=[{"role": "user", "content": f"""Macro analyst. Analyze how these political events affect financial markets and return ONLY a JSON object with these fields: market_impact (Positive/Negative/Neutral), impact_score (float -1.0 to 1.0), affected_assets (list of strings), reasoning (one sentence), urgency (High/Medium/Low), confidence (0-100).
 
-{_format_articles(political)}
-
-{{"market_impact": "<Positive|Negative|Neutral>", "impact_score": <-1.0 to 1.0>, "affected_assets": ["<asset>"], "reasoning": "<one sentence>", "urgency": "<High|Medium|Low>", "confidence": <0-100>}}"""}]
+{_format_articles(political)}"""}]
         )
         return _parse_claude_json(msg.content[0].text)
     except Exception as e:
