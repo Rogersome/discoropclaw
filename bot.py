@@ -222,13 +222,13 @@ def generate_signal(klines):
     atr    = AverageTrueRange(df["high"], df["low"], df["close"], window=14).average_true_range().iloc[-1]
 
     # Both RSI and BB% must agree to generate a signal
-    if rsi < 30 and bb_pct < 0.2:
+    if rsi < 40 and bb_pct < 0.3:
         signal, confidence = "BUY", 90
-    elif rsi < 35 and bb_pct < 0.3:
+    elif rsi < 45 and bb_pct < 0.4:
         signal, confidence = "BUY", 80
-    elif rsi > 70 and bb_pct > 0.8:
+    elif rsi > 60 and bb_pct > 0.7:
         signal, confidence = "SELL", 90
-    elif rsi > 65 and bb_pct > 0.7:
+    elif rsi > 55 and bb_pct > 0.6:
         signal, confidence = "SELL", 80
     else:
         signal, confidence = "HOLD", 50
@@ -271,7 +271,7 @@ def check_exit(trade, current_price):
 
 def risk_approved(signal, confidence):
     if signal == "HOLD":                return False
-    if confidence < 80:                 return False
+    if confidence < 70:                 return False
     if get_open_trade():                return False
     if get_balance() < MIN_BALANCE:
         print(f"Balance too low: ${get_balance():.2f}. Paused.")
