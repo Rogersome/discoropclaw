@@ -571,15 +571,19 @@ async def trades(ctx):
 @bot.command()
 async def news(ctx):
     await ctx.send("Fetching news & running Claude analysis...")
-    articles = fetch_news()
+    loop = asyncio.get_event_loop()
+    articles = await loop.run_in_executor(None, fetch_news)
     if sum(len(v) for v in articles.values()) == 0:
         await ctx.send("No articles fetched.")
         return
     price = get_price() or 0
-    score, trend, result = analyze_sentiment(articles)
+    score, trend, result = await loop.run_in_executor(None, analyze_sentiment, articles)
     save_sentiment(score, trend, result)
     _sentiment_cache.update({"score": score, "trend": trend, "result": result, "timestamp": time.time()})
-    await ctx.send(build_news_report(articles, score, trend, result, get_performance(), get_balance(), get_equity(price)))
+    report = build_news_report(articles, score, trend, result, get_performance(), get_balance(), get_equity(price))
+    # Discord limit is 2000 chars — split if needed
+    for chunk in [report[i:i+1900] for i in range(0, len(report), 1900)]:
+        await ctx.send(f"```\n{chunk}\n```")
 
 @bot.command()
 async def help_bot(ctx):
