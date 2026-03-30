@@ -406,44 +406,84 @@ def build_news_report(articles_by_type, score, trend, result, performance, balan
     fin       = result.get("financial", {})
     pol       = result.get("political", {})
     yesterday = get_yesterday_sentiment()
-    trend_change = ""
+
+    # Trend indicator
+    trend_icon = "BULLISH" if trend == "Bullish" else ("BEARISH" if trend == "Bearish" else "NEUTRAL")
+
+    # Score change vs yesterday
+    vs_yesterday = ""
     if yesterday:
         diff = round(score - yesterday[0], 3)
-        trend_change = f"\nVs Yesterday: {yesterday[1]} ({diff:+.3f})"
+        direction = "UP" if diff > 0 else "DOWN"
+        vs_yesterday = f"  |  vs Yesterday: {yesterday[1]} ({direction} {abs(diff):.3f})"
 
-    return f"""Daily Market Intelligence Report
-{time.strftime('%Y-%m-%d %H:%M')} UTC
+    # Score bar (visual)
+    filled = int((score + 1) / 2 * 10)
+    bar = "[" + "#" * filled + "-" * (10 - filled) + "]"
 
-=== Sentiment ===
-Score : {score} -> {trend}{trend_change}
+    # Key events
+    events = fin.get("key_events", [])
+    events_str = "\n".join(f"  >> {e}" for e in events) if events else "  >> N/A"
 
---- Financial ---
-Trend     : {fin.get('trend', 'N/A')}
-Confidence: {fin.get('confidence', 'N/A')}%
-Reasoning : {fin.get('reasoning', 'N/A')}
-Top Coin  : {fin.get('top_coin', 'BTC')}
-Key Events: {', '.join(fin.get('key_events', []))}
+    # Headlines
+    def headlines(key, n=3):
+        return "\n".join(f"  - {a['title']}" for a in articles_by_type.get(key, [])[:n]) or "  - N/A"
 
---- Political ---
-Impact    : {pol.get('market_impact', 'N/A')} ({pol.get('urgency', 'N/A')} urgency)
-Score     : {pol.get('impact_score', 'N/A')}
-Assets    : {', '.join(pol.get('affected_assets', []))}
-Reasoning : {pol.get('reasoning', 'N/A')}
+    # Win rate bar
+    wr = performance['win_rate']
+    wr_filled = int(wr / 10)
+    wr_bar = "[" + "#" * wr_filled + "-" * (10 - wr_filled) + "]"
 
-=== Account ===
-Balance : ${balance:,.2f}
-Equity  : ${equity:,.2f}
+    return f"""============================================
+  MARKET INTELLIGENCE REPORT
+  {time.strftime('%Y-%m-%d %H:%M')} UTC
+============================================
 
-=== Performance ===
-Trades   : {performance['total_trades']}
-W/L      : {performance['wins']} / {performance['losses']}
-Win Rate : {performance['win_rate']}%
-Total PnL: ${performance['total_pnl']:+.2f}
+[ OVERALL SENTIMENT ]  {trend_icon}
+  Score  : {score:+.3f}  {bar}{vs_yesterday}
+  Signal : {"BUY signal supported" if trend == "Bullish" else ("SELL signal supported" if trend == "Bearish" else "No directional bias")}
 
-=== Headlines ===
-Crypto  : {' | '.join(a['title'] for a in articles_by_type.get('crypto', [])[:3])}
-Finance : {' | '.join(a['title'] for a in articles_by_type.get('finance', [])[:3])}
-Politics: {' | '.join(a['title'] for a in articles_by_type.get('political', [])[:3])}"""
+--------------------------------------------
+[ FINANCIAL ANALYSIS ]
+  Trend      : {fin.get('trend', 'N/A')}
+  Confidence : {fin.get('confidence', 'N/A')}%
+  Top Coin   : {fin.get('top_coin', 'BTC')}
+  Score      : {fin.get('score', 'N/A')}
+  Reasoning  : {fin.get('reasoning', 'N/A')}
+
+  Key Events :
+{events_str}
+
+--------------------------------------------
+[ POLITICAL ANALYSIS ]
+  Impact     : {pol.get('market_impact', 'N/A')}
+  Urgency    : {pol.get('urgency', 'N/A')}
+  Score      : {pol.get('impact_score', 'N/A')}
+  Assets     : {', '.join(pol.get('affected_assets', []))}
+  Reasoning  : {pol.get('reasoning', 'N/A')}
+
+--------------------------------------------
+[ ACCOUNT ]
+  Balance    : ${balance:,.2f}
+  Equity     : ${equity:,.2f}
+  PnL        : ${equity - balance:+,.2f} (unrealized)
+
+[ PERFORMANCE ]
+  Trades     : {performance['total_trades']}  (W {performance['wins']} / L {performance['losses']})
+  Win Rate   : {wr}%  {wr_bar}
+  Total PnL  : ${performance['total_pnl']:+.2f}
+
+--------------------------------------------
+[ TOP HEADLINES ]
+  Crypto:
+{headlines('crypto')}
+
+  Finance:
+{headlines('finance')}
+
+  Political:
+{headlines('political')}
+============================================"""
 
 # ── Background cycle ──────────────────────────────────────────────────────────
 
