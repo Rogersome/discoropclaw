@@ -24,7 +24,7 @@ MIN_BALANCE    = CAPITAL * 0.5
 SENTIMENT_TTL  = 1800  # Refresh sentiment every 30 minutes
 
 BOT_TOKEN         = getpass("Paste your Discord Bot Token: ")
-CHANNEL_ID        = int(input("Paste your Discord Channel ID: "))
+CHANNEL_ID        = 1487253623456137288
 ANTHROPIC_API_KEY = getpass("Paste your Anthropic API key: ")
 claude            = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
