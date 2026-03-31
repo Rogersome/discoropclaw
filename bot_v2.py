@@ -22,7 +22,7 @@ DB_PATH        = "/home/jefferykuo92/discoropclaw/trading_bot_v2.db"
 CAPITAL        = 1000
 RISK_PER_TRADE = 0.02
 MIN_BALANCE    = CAPITAL * 0.5
-SENTIMENT_TTL  = 1800
+SENTIMENT_TTL  = 900   # Refresh sentiment every 15 minutes
 
 BOT_TOKEN         = getpass("Paste your Discord Bot Token: ")
 CHANNEL_ID        = 1487253623456137288
