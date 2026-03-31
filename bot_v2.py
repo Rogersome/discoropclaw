@@ -442,11 +442,12 @@ def build_news_report(articles_by_type, score, trend, result, performance, balan
 # ── Background Cycle ──────────────────────────────────────────────────────────
 
 bot = Client(token=BOT_TOKEN, intents=Intents.DEFAULT | Intents.MESSAGE_CONTENT)
+_loop = None
 
 def send_to_channel(message):
     channel = bot.get_channel(CHANNEL_ID)
-    if channel:
-        asyncio.run_coroutine_threadsafe(channel.send(content=message), bot._loop)
+    if channel and _loop:
+        asyncio.run_coroutine_threadsafe(channel.send(content=message), _loop)
 
 def background_cycle():
     price  = get_price()
@@ -498,6 +499,8 @@ def background_loop():
 
 @listen(Startup)
 async def on_startup():
+    global _loop
+    _loop = asyncio.get_event_loop()
     print(f"Bot online as {bot.app.name}")
     threading.Thread(target=background_loop, daemon=True).start()
     await bot.get_channel(CHANNEL_ID).send("Bot online. Type /help for commands.")
